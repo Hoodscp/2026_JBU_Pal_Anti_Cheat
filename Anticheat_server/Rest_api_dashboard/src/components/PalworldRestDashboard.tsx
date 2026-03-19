@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { RefreshCw, Server, Users, Save, Megaphone, Gauge, ShieldAlert, Clock3, Globe2 } from "lucide-react";
+import { RefreshCw, Server, Users, Save, Megaphone, Gauge, ShieldAlert, Clock3, Globe2, LogOut } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -262,6 +262,22 @@ export default function PalworldRestDashboard() {
     }
   }
 
+  async function kickPlayer(userId: string, playerName: string) {
+    if (!confirm(`정말로 "${playerName}" 플레이어를 추방하시겠습니까?`)) return;
+    try {
+      await request<unknown>("/kick", {
+        method: "POST",
+        body: JSON.stringify({ userid: userId, message: "관리자에 의해 추방되었습니다." }),
+      });
+      addLog("success", `${playerName} (${userId}) 추방 요청을 전송했습니다.`);
+      refreshAll();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "플레이어 추방 실패";
+      setError(message);
+      addLog("error", `${playerName} 추방 실패: ${message}`);
+    }
+  }
+
   useEffect(() => {
     refreshAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -497,12 +513,13 @@ export default function PalworldRestDashboard() {
                       <th className="px-4 py-3">IP</th>
                       <th className="px-4 py-3">건물 수</th>
                       <th className="px-4 py-3">Player ID</th>
+                      <th className="px-4 py-3 text-center">관리</th>
                     </tr>
                   </thead>
                   <tbody>
                     {filteredPlayers.length === 0 ? (
                       <tr>
-                        <td colSpan={7} className="px-4 py-10 text-center text-slate-500">
+                        <td colSpan={8} className="px-4 py-10 text-center text-slate-500">
                           표시할 플레이어가 없습니다.
                         </td>
                       </tr>
@@ -516,6 +533,22 @@ export default function PalworldRestDashboard() {
                           <td className="px-4 py-3">{player.ip || "-"}</td>
                           <td className="px-4 py-3">{formatNumber(player.building_count)}</td>
                           <td className="px-4 py-3 font-mono text-xs">{player.playerId || "-"}</td>
+                          <td className="px-4 py-3 text-center relative pointer-events-auto">
+                            <div className="relative z-50">
+                              <Button
+                                variant="destructive"
+                                size="sm"
+                                className="rounded-2xl cursor-pointer"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  kickPlayer(player.userId, player.name || player.accountName || "알 수 없음");
+                                }}
+                              >
+                                <LogOut className="mr-1 h-3.5 w-3.5" />
+                                추방
+                              </Button>
+                            </div>
+                          </td>
                         </tr>
                       ))
                     )}
