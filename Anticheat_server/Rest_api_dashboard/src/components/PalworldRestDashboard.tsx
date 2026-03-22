@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { RefreshCw, Server, Users, Save, Megaphone, Gauge, ShieldAlert, Clock3, Globe2, LogOut } from "lucide-react";
+import { RefreshCw, Server, Users, Save, Megaphone, Gauge, ShieldAlert, Clock3, Globe2, LogOut, Ban, Unlock, Power } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -72,6 +72,12 @@ type LogItem = {
   message: string;
 };
 
+type BannedPlayer = {
+  userId: string;
+  name: string;
+  date: string;
+};
+
 const STORAGE_KEY = "palworld-rest-dashboard-config-v2";
 
 function encodeBasicAuth(username: string, password: string) {
@@ -111,6 +117,10 @@ export default function PalworldRestDashboard() {
   const [refreshMs, setRefreshMs] = useState(10000);
   const [filter, setFilter] = useState("");
   const [announcement, setAnnouncement] = useState("서버 저장을 시작합니다. 잠시만 기다려주세요.");
+  const [bannedPlayers, setBannedPlayers] = useState<BannedPlayer[]>([]);
+  const [manualUnbanId, setManualUnbanId] = useState("");
+  const [shutdownWaitTime, setShutdownWaitTime] = useState(60);
+  const [shutdownMessage, setShutdownMessage] = useState("서버 점검을 위해 종료됩니다.");
 
   const [loading, setLoading] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
@@ -136,6 +146,7 @@ export default function PalworldRestDashboard() {
       if (typeof parsed.password === "string") setPassword(parsed.password);
       if (typeof parsed.autoRefresh === "boolean") setAutoRefresh(parsed.autoRefresh);
       if (typeof parsed.refreshMs === "number") setRefreshMs(parsed.refreshMs);
+      if (Array.isArray(parsed.bannedPlayers)) setBannedPlayers(parsed.bannedPlayers);
     } catch {
       // ignore broken local storage
     }
@@ -144,9 +155,9 @@ export default function PalworldRestDashboard() {
   useEffect(() => {
     localStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify({ baseUrl, username, password, autoRefresh, refreshMs })
+      JSON.stringify({ baseUrl, username, password, autoRefresh, refreshMs, bannedPlayers })
     );
-  }, [baseUrl, username, password, autoRefresh, refreshMs]);
+  }, [baseUrl, username, password, autoRefresh, refreshMs, bannedPlayers]);
 
   const authHeader = useMemo(() => encodeBasicAuth(username, password), [username, password]);
 
@@ -262,6 +273,35 @@ export default function PalworldRestDashboard() {
     }
   }
 
+  async function shutdownServer(waittime: number, message: string) {
+    if (!confirm(`정말로 서버를 ${waittime}초 뒤에 종료(Shutdown)하시겠습니까?\n사유: ${message}`)) return;
+    try {
+      await request<unknown>("/shutdown", {
+        method: "POST",
+        body: JSON.stringify({ waittime, message: message.trim() || undefined }),
+      });
+      addLog("success", `서버 정상 종료 요청을 전송했습니다. (${waittime}초 후)`);
+    } catch (e) {
+      const errorMsg = e instanceof Error ? e.message : "종료 실패";
+      setError(errorMsg);
+      addLog("error", `서버 정상 종료 실패: ${errorMsg}`);
+    }
+  }
+
+  async function forceShutdownServer() {
+    if (!confirm(`경고: 지금 당장 강제 종료(Force Shutdown)하시겠습니까?\n진행중인 데이터가 손실될 수 있습니다!`)) return;
+    try {
+      await request<unknown>("/forceshutdown", {
+        method: "POST",
+      });
+      addLog("success", `서버 강제 종료 요청을 전송했습니다.`);
+    } catch (e) {
+      const errorMsg = e instanceof Error ? e.message : "종료 실패";
+      setError(errorMsg);
+      addLog("error", `서버 강제 종료 실패: ${errorMsg}`);
+    }
+  }
+
   async function kickPlayer(userId: string, playerName: string) {
     if (!confirm(`정말로 "${playerName}" 플레이어를 추방하시겠습니까?`)) return;
     try {
@@ -275,6 +315,44 @@ export default function PalworldRestDashboard() {
       const message = e instanceof Error ? e.message : "플레이어 추방 실패";
       setError(message);
       addLog("error", `${playerName} 추방 실패: ${message}`);
+    }
+  }
+
+  async function banPlayer(userId: string, playerName: string) {
+    if (!confirm(`정말로 "${playerName}" 플레이어를 밴(Ban) 하시겠습니까?`)) return;
+    try {
+      await request<unknown>("/ban", {
+        method: "POST",
+        body: JSON.stringify({ userid: userId, message: "관리자에 의해 밴 되었습니다." }),
+      });
+      addLog("success", `${playerName} (${userId}) 밴 요청을 전송했습니다.`);
+      setBannedPlayers((prev) => {
+        if (prev.some(p => p.userId === userId)) return prev;
+        return [...prev, { userId, name: playerName, date: new Date().toLocaleString() }];
+      });
+      refreshAll();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "플레이어 밴 실패";
+      setError(message);
+      addLog("error", `${playerName} 밴 실패: ${message}`);
+    }
+  }
+
+  async function unbanPlayer(userId: string, playerName: string = "알 수 없음") {
+    if (!confirm(`정말로 "${playerName}" (${userId}) 플레이어를 언밴(Unban) 하시겠습니까?`)) return;
+    try {
+      await request<unknown>("/unban", {
+        method: "POST",
+        body: JSON.stringify({ userid: userId }),
+      });
+      addLog("success", `${playerName} (${userId}) 언밴 요청을 전송했습니다.`);
+      setBannedPlayers((prev) => prev.filter(p => p.userId !== userId));
+      setManualUnbanId("");
+      refreshAll();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "플레이어 언밴 실패";
+      setError(message);
+      addLog("error", `${playerName} 언밴 실패: ${message}`);
     }
   }
 
@@ -382,26 +460,74 @@ export default function PalworldRestDashboard() {
             </CardContent>
           </Card>
 
-          <Card className="rounded-2xl shadow-sm">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Megaphone className="h-5 w-5" />
-                서버 공지
-              </CardTitle>
-              <CardDescription>REST API /announce 엔드포인트용 간단 전송</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <Textarea
-                rows={5}
-                value={announcement}
-                onChange={(e) => setAnnouncement(e.target.value)}
-                placeholder="공지 메시지를 입력하세요"
-              />
-              <Button className="w-full rounded-2xl" onClick={announceMessage}>
-                공지 보내기
-              </Button>
-            </CardContent>
-          </Card>
+          <div className="flex flex-col gap-6">
+            <Card className="rounded-2xl shadow-sm h-fit">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Megaphone className="h-5 w-5" />
+                  서버 공지
+                </CardTitle>
+                <CardDescription>REST API /announce 엔드포인트용 간단 전송</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <Textarea
+                  rows={3}
+                  value={announcement}
+                  onChange={(e) => setAnnouncement(e.target.value)}
+                  placeholder="공지 메시지를 입력하세요"
+                />
+                <Button className="w-full rounded-2xl" onClick={announceMessage}>
+                  공지 보내기
+                </Button>
+              </CardContent>
+            </Card>
+
+            <Card className="rounded-2xl shadow-sm border-red-200">
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-red-600">
+                  <Power className="h-5 w-5" />
+                  서버 전원 관리
+                </CardTitle>
+                <CardDescription>안전 종료 및 강제 종료</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label>대기 시간 (초) & 공지 메시지</Label>
+                  <div className="flex gap-2">
+                    <Input 
+                      type="number" 
+                      value={shutdownWaitTime} 
+                      onChange={(e) => setShutdownWaitTime(Number(e.target.value) || 0)} 
+                      className="w-20 shrink-0" 
+                    />
+                    <Input 
+                      placeholder="종료 메시지" 
+                      value={shutdownMessage} 
+                      onChange={(e) => setShutdownMessage(e.target.value)} 
+                      className="flex-1" 
+                    />
+                  </div>
+                  <Button 
+                    variant="outline" 
+                    className="w-full rounded-2xl border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"
+                    onClick={() => shutdownServer(shutdownWaitTime, shutdownMessage)}
+                  >
+                    정상 종료 예약 (Save & Shutdown)
+                  </Button>
+                </div>
+                
+                <div className="pt-3 border-t border-dashed border-red-200">
+                  <Button 
+                    variant="destructive" 
+                    className="w-full rounded-2xl"
+                    onClick={forceShutdownServer}
+                  >
+                    강제 즉시 종료 (Force)
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
         </div>
 
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -534,7 +660,7 @@ export default function PalworldRestDashboard() {
                           <td className="px-4 py-3">{formatNumber(player.building_count)}</td>
                           <td className="px-4 py-3 font-mono text-xs">{player.playerId || "-"}</td>
                           <td className="px-4 py-3 text-center relative pointer-events-auto">
-                            <div className="relative z-50">
+                            <div className="relative z-50 flex justify-center gap-1">
                               <Button
                                 variant="destructive"
                                 size="sm"
@@ -547,7 +673,93 @@ export default function PalworldRestDashboard() {
                                 <LogOut className="mr-1 h-3.5 w-3.5" />
                                 추방
                               </Button>
+                              <Button
+                                variant="destructive"
+                                size="sm"
+                                className="rounded-2xl cursor-pointer bg-red-700 hover:bg-red-800"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  banPlayer(player.userId, player.name || player.accountName || "알 수 없음");
+                                }}
+                              >
+                                <Ban className="mr-1 h-3.5 w-3.5" />
+                                밴
+                              </Button>
                             </div>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="rounded-2xl shadow-sm">
+          <CardHeader>
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <CardTitle>블랙리스트 (밴 목록)</CardTitle>
+                <CardDescription>대시보드에서 밴 한 플레이어 기록 및 언밴 기능</CardDescription>
+              </div>
+              <div className="flex w-full md:w-auto items-center gap-2">
+                <Input
+                  placeholder="Player ID (userid) 직접 입력"
+                  value={manualUnbanId}
+                  onChange={(e) => setManualUnbanId(e.target.value)}
+                  className="w-full md:w-64"
+                />
+                <Button 
+                  variant="secondary" 
+                  onClick={() => {
+                    if (!manualUnbanId.trim()) return;
+                    unbanPlayer(manualUnbanId.trim(), "수동 입력");
+                  }}
+                  className="shrink-0 rounded-2xl cursor-pointer"
+                >
+                  <Unlock className="mr-1 h-4 w-4" />
+                  수동 언밴
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-hidden rounded-2xl border bg-white">
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-slate-50 text-left text-slate-600">
+                    <tr>
+                      <th className="px-4 py-3">이름/계정</th>
+                      <th className="px-4 py-3">Player ID (userid)</th>
+                      <th className="px-4 py-3">밴 날짜 (로컬)</th>
+                      <th className="px-4 py-3 text-center">관리</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bannedPlayers.length === 0 ? (
+                      <tr>
+                        <td colSpan={4} className="px-4 py-10 text-center text-slate-500">
+                          로컬에 기록된 밴 목록이 없습니다.
+                        </td>
+                      </tr>
+                    ) : (
+                      bannedPlayers.map((bp) => (
+                        <tr key={bp.userId} className="border-t">
+                          <td className="px-4 py-3 font-medium">{bp.name}</td>
+                          <td className="px-4 py-3 font-mono text-xs">{bp.userId}</td>
+                          <td className="px-4 py-3 text-slate-500">{bp.date}</td>
+                          <td className="px-4 py-3 text-center relative pointer-events-auto">
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              className="rounded-2xl cursor-pointer"
+                              onClick={() => unbanPlayer(bp.userId, bp.name)}
+                            >
+                              <Unlock className="mr-1 h-3.5 w-3.5" />
+                              언밴
+                            </Button>
                           </td>
                         </tr>
                       ))
